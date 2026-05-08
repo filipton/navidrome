@@ -178,9 +178,9 @@ jobs:
     outputs:
       is_enabled: ${{ steps.check.outputs.is_enabled }}
     steps:
-      - name: Check if Docker push is configured
+      - name: Check if Docker push is configured (skip docker)
         id: check
-        run: echo "is_enabled=${{ secrets.DOCKER_HUB_USERNAME != '' }}" >> $GITHUB_OUTPUT
+        run: echo "is_enabled=${{ secrets.DOCKER_HUB_USERNAME == '' }}" >> $GITHUB_OUTPUT
 
   build:
     name: Build
