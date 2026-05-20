@@ -2,17 +2,21 @@ package nativeapi
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
 	"os"
+	"path"
 	"path/filepath"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/go-chi/chi/v5"
 	"github.com/navidrome/navidrome/log"
 	"github.com/navidrome/navidrome/model"
+	"github.com/navidrome/navidrome/scanner"
 )
 
 // maxUploadSize is the maximum size for an uploaded music file.
@@ -116,20 +120,39 @@ func (api *Router) uploadAndScan(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Trigger a selective scan limited to the target folder
+	// Trigger a selective scan limited to the target folder.
+	// Retry with back-off if the scanner is already busy (e.g. another upload or
+	// a scheduled scan is in progress) rather than failing the whole upload.
 	scanFolder := relFolder
 	if scanFolder == "" {
 		scanFolder = "."
 	}
 	target := model.ScanTarget{LibraryID: lib.ID, FolderPath: scanFolder}
 	log.Info(ctx, "Upload: triggering selective scan", "library", lib.ID, "folder", scanFolder, "file", fileName)
-	if _, err := api.scanner.ScanFolders(ctx, false, []model.ScanTarget{target}); err != nil {
-		http.Error(w, "scan failed: "+err.Error(), http.StatusInternalServerError)
-		return
+
+	const maxRetries = 10
+	var scanErr error
+	for i := range maxRetries {
+		_, scanErr = api.scanner.ScanFolders(ctx, false, []model.ScanTarget{target})
+		if scanErr == nil {
+			break
+		}
+		if !errors.Is(scanErr, scanner.ErrAlreadyScanning) {
+			http.Error(w, "scan failed: "+scanErr.Error(), http.StatusInternalServerError)
+			return
+		}
+		if i == maxRetries-1 {
+			http.Error(w, "scan failed: scanner busy, try again later", http.StatusServiceUnavailable)
+			return
+		}
+		wait := time.Duration(i+1) * 500 * time.Millisecond
+		log.Debug(ctx, "Upload: scanner busy, retrying", "attempt", i+1, "wait", wait)
+		time.Sleep(wait)
 	}
 
-	// Locate the new media file by library-qualified path (path is stored relative to library)
-	relInLib := filepath.Join(relFolder, fileName)
+	// Locate the new media file by library-qualified path.
+	// Use path.Join (forward slashes) because the DB always stores paths with '/'.
+	relInLib := path.Join(relFolder, fileName)
 	mfs, err := api.ds.MediaFile(ctx).FindByPaths([]string{fmt.Sprintf("%d:%s", lib.ID, relInLib)})
 	if err != nil {
 		http.Error(w, "lookup failed: "+err.Error(), http.StatusInternalServerError)
