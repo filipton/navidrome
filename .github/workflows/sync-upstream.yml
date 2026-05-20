@@ -143,9 +143,4 @@ jobs:
           else
             gh pr create --base "${BRANCH}" --head "${PR_BRANCH}" --title "${TITLE}" --body "${BODY}"
           fi
-      - name: Trigger pipeline after sync
-        if: steps.check.outputs.needs_sync == 'true' && (steps.merge.outputs.result == 'fast_forward' || steps.merge.outputs.result == 'merged')
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: |
-          gh workflow run "Pipeline: Test, Lint, Build" --ref "${BRANCH}"
+

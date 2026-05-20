@@ -9,6 +9,10 @@ on:
     branches:
       - master
   workflow_dispatch:
+  workflow_run:
+    workflows: ["Sync with upstream"]
+    types: [completed]
+    branches: [master]
 
 concurrency:
   group: ${{ startsWith(github.ref, 'refs/tags/v') && 'tag' || 'branch' }}-${{ github.ref }}
@@ -21,12 +25,14 @@ jobs:
   git-version:
     name: Get version info
     runs-on: ubuntu-latest
+    if: ${{ github.event_name != 'workflow_run' || github.event.workflow_run.conclusion == 'success' }}
     outputs:
       git_tag: ${{ steps.git-version.outputs.GIT_TAG }}
       git_sha: ${{ steps.git-version.outputs.GIT_SHA }}
     steps:
       - uses: actions/checkout@v6
         with:
+          ref: ${{ github.event.workflow_run.head_branch || github.ref }}
           fetch-depth: 0
           fetch-tags: true
 
@@ -62,8 +68,11 @@ jobs:
   go-lint:
     name: Lint Go code
     runs-on: ubuntu-latest
+    if: ${{ github.event_name != 'workflow_run' || github.event.workflow_run.conclusion == 'success' }}
     steps:
       - uses: actions/checkout@v6
+        with:
+          ref: ${{ github.event.workflow_run.head_branch || github.ref }}
 
       - uses: actions/setup-go@v6
         with:
@@ -100,9 +109,12 @@ jobs:
   go:
     name: Test Go code
     runs-on: ubuntu-latest
+    if: ${{ github.event_name != 'workflow_run' || github.event.workflow_run.conclusion == 'success' }}
     steps:
       - name: Check out code into the Go module directory
         uses: actions/checkout@v6
+        with:
+          ref: ${{ github.event.workflow_run.head_branch || github.ref }}
 
       - uses: actions/setup-go@v6
         with:
@@ -124,10 +136,13 @@ jobs:
   js:
     name: Test JS code
     runs-on: ubuntu-latest
+    if: ${{ github.event_name != 'workflow_run' || github.event.workflow_run.conclusion == 'success' }}
     env:
       NODE_OPTIONS: "--max_old_space_size=4096"
     steps:
       - uses: actions/checkout@v6
+        with:
+          ref: ${{ github.event.workflow_run.head_branch || github.ref }}
       - uses: actions/setup-node@v6
         with:
           node-version: 24
@@ -157,8 +172,11 @@ jobs:
   i18n-lint:
     name: Lint i18n files
     runs-on: ubuntu-latest
+    if: ${{ github.event_name != 'workflow_run' || github.event.workflow_run.conclusion == 'success' }}
     steps:
       - uses: actions/checkout@v6
+        with:
+          ref: ${{ github.event.workflow_run.head_branch || github.ref }}
       - run: |
           set -e
           for file in resources/i18n/*.json; do
@@ -176,6 +194,7 @@ jobs:
   check-push-enabled:
     name: Check Docker configuration
     runs-on: ubuntu-latest
+    if: ${{ github.event_name != 'workflow_run' || github.event.workflow_run.conclusion == 'success' }}
     outputs:
       is_enabled: ${{ steps.check.outputs.is_enabled }}
     steps:
@@ -205,6 +224,8 @@ jobs:
           echo "PLATFORM=$PLATFORM" >> $GITHUB_ENV
 
       - uses: actions/checkout@v6
+        with:
+          ref: ${{ github.event.workflow_run.head_branch || github.ref }}
 
       - name: Prepare Docker Buildx
         uses: ./.github/actions/prepare-docker
@@ -279,6 +300,8 @@ jobs:
       REGISTRY_IMAGE: ghcr.io/${{ github.repository }}
     steps:
       - uses: actions/checkout@v6
+        with:
+          ref: ${{ github.event.workflow_run.head_branch || github.ref }}
 
       - name: Download digests
         uses: actions/download-artifact@v8
