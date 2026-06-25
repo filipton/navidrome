@@ -135,6 +135,7 @@ jobs:
 
   go-windows:
     name: Test Go code (Windows)
+    if: github.repository == 'navidrome/navidrome'
     runs-on: windows-2022
     env:
       FFMPEG_VERSION: "7.1"
@@ -457,6 +458,7 @@ jobs:
 
   msi:
     name: Build Windows installers
+    if: github.repository == 'navidrome/navidrome'
     needs: [build, git-version]
     runs-on: ubuntu-24.04
 
@@ -491,6 +493,7 @@ jobs:
   release:
     name: Package/Release
     needs: [build, msi]
+    if: always() && needs.build.result == 'success' && (needs.msi.result == 'success' || needs.msi.result == 'skipped')
     runs-on: ubuntu-latest
     outputs:
       package_list: ${{ steps.set-package-list.outputs.package_list }}
