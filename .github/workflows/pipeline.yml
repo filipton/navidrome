@@ -36,7 +36,7 @@ jobs:
       - name: Show git version info
         run: |
           echo "git describe (dirty): $(git describe --dirty --always --tags)"
-          echo "git describe --tags: $(git describe --tags `git rev-list --tags --max-count=1`)"
+          echo "git describe --tags --abbrev=0: $(git describe --tags --abbrev=0)"
           echo "git tag: $(git tag --sort=-committerdate | head -n 1)"
           echo "github_ref: $GITHUB_REF"
           echo "github_head_sha: ${{ github.event.pull_request.head.sha }}"
@@ -44,7 +44,7 @@ jobs:
       - name: Determine git current SHA and latest tag
         id: git-version
         run: |
-          GIT_TAG=$(git tag --sort=-committerdate | head -n 1)
+          GIT_TAG=$(git describe --tags --abbrev=0 2>/dev/null || true)
           if [ -n "$GIT_TAG" ]; then
             if [[ "$GITHUB_REF" != refs/tags/* ]]; then
               GIT_TAG=${GIT_TAG}-SNAPSHOT
@@ -370,3 +370,4 @@ jobs:
           for artifact in $(gh api repos/${{ github.repository }}/actions/artifacts | jq -r '.artifacts[] | select(.name | startswith("digests-")) | .id'); do
             gh api --method DELETE repos/${{ github.repository }}/actions/artifacts/$artifact
           done
+
