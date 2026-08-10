@@ -13,6 +13,7 @@ import (
 	"github.com/go-chi/chi/v5/middleware"
 	"github.com/navidrome/navidrome/conf"
 	"github.com/navidrome/navidrome/core"
+	"github.com/navidrome/navidrome/core/artwork"
 	"github.com/navidrome/navidrome/core/metrics"
 	playlistsvc "github.com/navidrome/navidrome/core/playlists"
 	"github.com/navidrome/navidrome/log"
@@ -44,12 +45,20 @@ type Router struct {
 	users         core.User
 	maintenance   core.Maintenance
 	pluginManager PluginManager
+<<<<<<< HEAD
 	imgUpload     core.ImageUploadService
 	scanner       model.Scanner
 }
 
 func New(ds model.DataStore, share core.Share, playlists playlistsvc.Playlists, insights metrics.Insights, libraryService core.Library, userService core.User, maintenance core.Maintenance, pluginManager PluginManager, imgUpload core.ImageUploadService, scanner model.Scanner) *Router {
 	r := &Router{ds: ds, share: share, playlists: playlists, insights: insights, libs: libraryService, users: userService, maintenance: maintenance, pluginManager: pluginManager, imgUpload: imgUpload, scanner: scanner}
+=======
+	imgUpload     artwork.Uploader
+}
+
+func New(ds model.DataStore, share core.Share, playlists playlistsvc.Playlists, insights metrics.Insights, libraryService core.Library, userService core.User, maintenance core.Maintenance, pluginManager PluginManager, imgUpload artwork.Uploader) *Router {
+	r := &Router{ds: ds, share: share, playlists: playlists, insights: insights, libs: libraryService, users: userService, maintenance: maintenance, pluginManager: pluginManager, imgUpload: imgUpload}
+>>>>>>> upstream/master
 	r.Handler = r.routes()
 	return r
 }
@@ -92,7 +101,11 @@ func (api *Router) routes() http.Handler {
 			api.addConfigRoute(r)
 			api.addUserLibraryRoute(r)
 			api.addPluginRoute(r)
+<<<<<<< HEAD
 			api.addUploadRoute(r)
+=======
+			api.addArtworkRoute(r)
+>>>>>>> upstream/master
 			api.RX(r, "/library", api.libs.NewRepository, true)
 		})
 	})
