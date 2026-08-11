@@ -29,7 +29,7 @@ var _ = Describe("Artwork API", func() {
 		queueRepo = tests.CreateMockArtworkQueueRepo()
 		ds = &tests.MockDataStore{MockedArtwork: artRepo, MockedArtworkQueue: queueRepo}
 		auth.Init(ds)
-		nativeRouter := New(ds, nil, nil, nil, tests.NewMockLibraryService(), tests.NewMockUserService(), nil, nil, nil, nil)
+		nativeRouter := New(ds, nil, nil, nil, tests.NewMockLibraryService(), tests.NewMockUserService(), nil, nil, nil)
 		router = server.JWTVerifier(nativeRouter)
 
 		adminUser := model.User{ID: "admin-1", UserName: "admin", IsAdmin: true, NewPassword: "adminpass"}

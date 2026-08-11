@@ -17,14 +17,27 @@ import (
 	"github.com/navidrome/navidrome/log"
 	"github.com/navidrome/navidrome/model"
 	"github.com/navidrome/navidrome/scanner"
+	"github.com/navidrome/navidrome/server"
 )
 
 // maxUploadSize is the maximum size for an uploaded music file.
 const maxUploadSize = 1 << 30 // 1 GiB
 
-// addUploadRoute registers the music-file upload endpoint.
+// uploadRouter serves the fork-specific music upload API.
 //
-// POST /api/upload
+// FORK POLICY (see FORK.md): it is a standalone router, mounted separately in
+// cmd/root.go, instead of being part of nativeapi.Router. This way upstream
+// changes to native_api.go / wire_gen.go never conflict with this feature.
+type uploadRouter struct {
+	ds      model.DataStore
+	scanner model.Scanner
+}
+
+// NewUploadRouter returns the music-file upload handler.
+//
+// It is meant to be mounted at /api/upload (see cmd/root.go), serving:
+//
+//	POST /api/upload
 //
 //	multipart/form-data fields:
 //	  file       (required)  - the music file to upload
@@ -34,11 +47,17 @@ const maxUploadSize = 1 << 30 // 1 GiB
 //
 // On success, performs a selective scan limited to the target folder and
 // returns JSON `{"id": "<mediaFileId>", "path": "...", "libraryId": N, "title": "..."}`.
-func (api *Router) addUploadRoute(r chi.Router) {
-	r.Post("/upload", api.uploadAndScan)
+func NewUploadRouter(ds model.DataStore, scanner model.Scanner) http.Handler {
+	api := &uploadRouter{ds: ds, scanner: scanner}
+	r := chi.NewRouter()
+	r.Use(server.Authenticator(ds))
+	r.Use(server.JWTRefresher)
+	r.Use(server.UpdateLastAccessMiddleware(ds))
+	r.With(adminOnlyMiddleware).Post("/", api.uploadAndScan)
+	return r
 }
 
-func (api *Router) uploadAndScan(w http.ResponseWriter, r *http.Request) {
+func (api *uploadRouter) uploadAndScan(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
 
 	// Limit the size of the request body up-front

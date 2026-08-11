@@ -35,6 +35,10 @@ jobs:
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          # Fork policy (see FORK.md / .gitattributes): files marked with
+          # "merge=ours" (e.g. our custom .github/workflows/pipeline.yml) keep
+          # OUR version automatically when both sides changed them.
+          git config merge.ours.driver true
 
       - name: Add upstream remote
         run: |
