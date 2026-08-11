@@ -66,6 +66,20 @@ git merge upstream/master
 Expected result in the current layout: clean merge, or at worst a trivial
 conflict in `cmd/root.go` (keep the fork line, take upstream's rest).
 
+## What can still break a sync (and what happens then)
+
+- **Compile break without conflict**: if upstream changes the signature of an
+  API used by fork-owned files (e.g. `scanner.New` in `cmd/fork_upload.go`,
+  `server.Authenticator` in `upload.go`), the merge stays clean but the build
+  breaks. The fork's pipeline ("Test Go code") catches this right after the
+  sync push — master goes red, no Docker image is pushed. Fix forward on
+  master. Keep fork files depending on as few upstream APIs as possible.
+- **The one line in `cmd/root.go`**: if upstream ever rewrites
+  `startServer()`, resolve the conflict keeping the
+  `MountRouter("Upload API", ...)` call.
+- **Anything else** (registry rate limits, flaky upstream tests, cancelled
+  cleanup jobs) is unrelated to the sync — re-run the failed pipeline jobs.
+
 ## Adding a new fork feature
 
 1. Put the code in **new files** (never edit upstream files).
