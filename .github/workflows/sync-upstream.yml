@@ -2,251 +2,31 @@ name: Sync with upstream
 
 on:
   schedule:
-    # Run every day at 04:00 UTC
     - cron: "0 4 * * *"
   workflow_dispatch:
-    inputs:
-      branch:
-        description: "Branch to sync"
-        required: false
-        default: "master"
 
 permissions:
+  actions: write
   contents: write
-  pull-requests: write
-  issues: write
+
+concurrency:
+  group: upstream-sync-master
+  cancel-in-progress: false
 
 jobs:
   sync:
     runs-on: ubuntu-latest
-    env:
-      UPSTREAM_REPO: navidrome/navidrome
-      BRANCH: ${{ github.event.inputs.branch || 'master' }}
-      NOTIFY_USER: filipton
     steps:
-      - name: Checkout fork
-        uses: actions/checkout@v4
-        with:
-          fetch-depth: 0
-          ref: ${{ env.BRANCH }}
-          token: ${{ secrets.GITHUB_TOKEN }}
-
-      - name: Configure git
-        run: |
-          git config user.name "github-actions[bot]"
-          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          # Fork policy (see FORK.md / .gitattributes): files marked with
-          # "merge=ours" (e.g. our custom .github/workflows/pipeline.yml) keep
-          # OUR version automatically when both sides changed them.
-          git config merge.ours.driver true
-
-      - name: Add upstream remote
-        run: |
-          git remote add upstream "https://github.com/${UPSTREAM_REPO}.git"
-          git fetch upstream "${BRANCH}"
-
-      - name: Check if sync is needed
-        id: check
-        run: |
-          LOCAL_SHA=$(git rev-parse HEAD)
-          UPSTREAM_SHA=$(git rev-parse upstream/${BRANCH})
-          echo "local_sha=${LOCAL_SHA}" >> "$GITHUB_OUTPUT"
-          echo "upstream_sha=${UPSTREAM_SHA}" >> "$GITHUB_OUTPUT"
-
-          if git merge-base --is-ancestor "${UPSTREAM_SHA}" "${LOCAL_SHA}"; then
-            echo "Already up to date with upstream."
-            echo "needs_sync=false" >> "$GITHUB_OUTPUT"
-          else
-            echo "needs_sync=true" >> "$GITHUB_OUTPUT"
-          fi
-
-      - name: Attempt fast-forward / clean merge
-        if: steps.check.outputs.needs_sync == 'true'
-        id: merge
-        run: |
-          set +e
-          git merge --no-edit --ff "upstream/${BRANCH}"
-          FF_STATUS=$?
-          if [ $FF_STATUS -eq 0 ]; then
-            echo "result=fast_forward" >> "$GITHUB_OUTPUT"
-            exit 0
-          fi
-
-          # Fast-forward not possible, attempt a real merge
-          git merge --abort 2>/dev/null || true
-          git merge --no-edit --no-ff "upstream/${BRANCH}"
-          MERGE_STATUS=$?
-          if [ $MERGE_STATUS -eq 0 ]; then
-            echo "result=merged" >> "$GITHUB_OUTPUT"
-            exit 0
-          fi
-
-          echo "Merge failed due to conflicts."
-          git merge --abort 2>/dev/null || true
-          echo "result=conflict" >> "$GITHUB_OUTPUT"
-
-      - name: Detect workflow file changes
-        if: steps.check.outputs.needs_sync == 'true' && (steps.merge.outputs.result == 'fast_forward' || steps.merge.outputs.result == 'merged')
-        id: workflow_changes
-        run: |
-          CHANGED=$(git diff --name-only "${{ steps.check.outputs.local_sha }}" HEAD -- '.github/workflows/' || true)
-          if [ -n "${CHANGED}" ]; then
-            echo "has_workflow_changes=true" >> "$GITHUB_OUTPUT"
-            {
-              echo "changed_files<<EOF"
-              echo "${CHANGED}"
-              echo "EOF"
-            } >> "$GITHUB_OUTPUT"
-          else
-            echo "has_workflow_changes=false" >> "$GITHUB_OUTPUT"
-          fi
-
-      - name: Push clean merge to ${{ env.BRANCH }}
-        if: steps.check.outputs.needs_sync == 'true' && (steps.merge.outputs.result == 'fast_forward' || steps.merge.outputs.result == 'merged') && steps.workflow_changes.outputs.has_workflow_changes != 'true'
-        id: push
-        run: |
-          git push origin "${BRANCH}"
-          echo "result=success" >> "$GITHUB_OUTPUT"
-
-      # When the merge itself is clean but touches workflow files, GITHUB_TOKEN
-      # often cannot push those changes. Open a PR branch instead of failing
-      # with only an issue.
-      - name: Prepare workflow-changes PR branch
-        if: steps.check.outputs.needs_sync == 'true' && (steps.merge.outputs.result == 'fast_forward' || steps.merge.outputs.result == 'merged') && steps.workflow_changes.outputs.has_workflow_changes == 'true'
-        id: workflow_pr
-        run: |
-          PR_BRANCH="sync/upstream-${BRANCH}-workflows-${{ steps.check.outputs.upstream_sha }}"
-          PR_BRANCH="${PR_BRANCH:0:60}"
-          echo "pr_branch=${PR_BRANCH}" >> "$GITHUB_OUTPUT"
-
-          git checkout -B "${PR_BRANCH}"
-          git push --force origin "${PR_BRANCH}"
-
-      - name: Open / update workflow-changes PR
-        if: steps.workflow_pr.outputs.pr_branch != ''
+      - name: Sync fork branch
+        id: sync
         env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          GH_REPO: ${{ github.repository }}
+          GH_TOKEN: ${{ github.token }}
         run: |
-          PR_BRANCH="${{ steps.workflow_pr.outputs.pr_branch }}"
-          TITLE="chore: sync with upstream (workflow file changes)"
-          BODY=$(cat <<EOF
-          Automated sync from [\`${UPSTREAM_REPO}@${BRANCH}\`](https://github.com/${UPSTREAM_REPO}/tree/${BRANCH}).
+          merge_type=$(gh api --method POST "repos/${GITHUB_REPOSITORY}/merge-upstream" -f branch=master --jq .merge_type)
+          echo "merge_type=${merge_type}" >> "$GITHUB_OUTPUT"
 
-          Merging upstream into \`${BRANCH}\` succeeded, but it modified workflow files that \`GITHUB_TOKEN\` cannot push directly to the protected branch:
-
-          \`\`\`
-          ${{ steps.workflow_changes.outputs.changed_files }}
-          \`\`\`
-
-          Review and merge this PR to finish the sync.
-
-          Upstream SHA: \`${{ steps.check.outputs.upstream_sha }}\`
-          EOF
-          )
-
-          EXISTING=$(gh pr list --head "${PR_BRANCH}" --base "${BRANCH}" --state open --json number --jq '.[0].number' || true)
-          if [ -n "${EXISTING}" ]; then
-            gh pr edit "${EXISTING}" --title "${TITLE}" --body "${BODY}"
-          else
-            gh pr create --base "${BRANCH}" --head "${PR_BRANCH}" --title "${TITLE}" --body "${BODY}"
-          fi
-
-      - name: Prepare conflict PR branch
-        if: steps.merge.outputs.result == 'conflict'
-        id: conflict
-        run: |
-          PR_BRANCH="sync/upstream-${BRANCH}-${{ steps.check.outputs.upstream_sha }}"
-          PR_BRANCH="${PR_BRANCH:0:60}"
-          echo "pr_branch=${PR_BRANCH}" >> "$GITHUB_OUTPUT"
-
-          git checkout -B "${PR_BRANCH}"
-
-          # Re-run merge so conflict markers are written to the working tree.
-          set +e
-          git merge --no-ff --no-commit "upstream/${BRANCH}"
-          set -e
-
-          # Stage everything (including files with unresolved conflict markers)
-          git add -A
-
-          # Create a commit that preserves the merge parents but leaves conflict
-          # markers in place for a human to resolve in the PR.
-          TREE=$(git write-tree)
-          PARENT1=$(git rev-parse HEAD)
-          PARENT2=$(git rev-parse upstream/${BRANCH})
-          COMMIT=$(git commit-tree "${TREE}" -p "${PARENT1}" -p "${PARENT2}" -m "chore: sync with upstream ${UPSTREAM_REPO}@${BRANCH} (conflicts)")
-          git update-ref "refs/heads/${PR_BRANCH}" "${COMMIT}"
-          git reset --hard "${COMMIT}"
-
-          git push --force origin "${PR_BRANCH}"
-
-      - name: Open / update conflict PR
-        if: steps.merge.outputs.result == 'conflict'
+      - name: Test and publish updated branch
+        if: steps.sync.outputs.merge_type != 'none'
         env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          GH_REPO: ${{ github.repository }}
-        run: |
-          PR_BRANCH="${{ steps.conflict.outputs.pr_branch }}"
-          TITLE="chore: sync with upstream (conflicts need resolution)"
-          BODY=$(cat <<EOF
-          Automated sync from [\`${UPSTREAM_REPO}@${BRANCH}\`](https://github.com/${UPSTREAM_REPO}/tree/${BRANCH}).
-
-          Merging upstream into \`${BRANCH}\` produced **conflicts** that need to be resolved manually.
-
-          The commit on this branch is a real merge commit (two parents) whose tree still contains conflict markers. To resolve:
-
-          1. Check out this branch locally: \`git fetch origin ${PR_BRANCH} && git checkout ${PR_BRANCH}\`
-          2. Resolve conflicts in the files listed by \`git status\` / search for \`<<<<<<<\`.
-          3. \`git add\` the resolved files and amend: \`git commit --amend --no-edit\`
-          4. \`git push --force-with-lease\`
-          5. Merge this PR.
-
-          Upstream SHA: \`${{ steps.check.outputs.upstream_sha }}\`
-          EOF
-          )
-
-          EXISTING=$(gh pr list --head "${PR_BRANCH}" --base "${BRANCH}" --state open --json number --jq '.[0].number' || true)
-          if [ -n "${EXISTING}" ]; then
-            gh pr edit "${EXISTING}" --title "${TITLE}" --body "${BODY}"
-          else
-            gh pr create --base "${BRANCH}" --head "${PR_BRANCH}" --title "${TITLE}" --body "${BODY}"
-          fi
-
-      - name: Notify on push failure
-        if: steps.push.outcome == 'failure'
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: |
-          TITLE="Upstream sync required: ${UPSTREAM_REPO}@${BRANCH}"
-          BODY=$(cat <<EOF
-          @${NOTIFY_USER} — automated upstream sync could not complete.
-
-          **Reason:** push failed
-
-          **Upstream SHA:** \`${{ steps.check.outputs.upstream_sha }}\`
-          **Local SHA:** \`${{ steps.check.outputs.local_sha }}\`
-
-          The merge succeeded locally but could not be pushed to origin.
-
-          _Created by the [Sync with upstream](${{ github.server_url }}/${{ github.repository }}/actions/workflows/sync-upstream.yml) workflow._
-          EOF
-          )
-
-          EXISTING=$(gh issue list --search "Upstream sync required in:title repo:${{ github.repository }}" --state open --json number --jq '.[0].number' || true)
-          if [ -n "${EXISTING}" ]; then
-            gh issue comment "${EXISTING}" --body "${BODY}"
-          else
-            gh label create upstream-sync --color d4c5f9 --description "Automated upstream sync needs manual intervention" 2>/dev/null || true
-            if gh issue create \
-              --title "${TITLE}" \
-              --body "${BODY}" \
-              --label upstream-sync \
-              --assignee "${NOTIFY_USER}" 2>/dev/null; then
-              :
-            else
-              gh issue create --title "${TITLE}" --body "${BODY}"
-            fi
-          fi
-
-          exit 1
+          GH_TOKEN: ${{ github.token }}
+        run: gh workflow run fork-pipeline.yml --ref master

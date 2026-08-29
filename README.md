@@ -14,31 +14,6 @@
 Navidrome is an open source web-based music collection server and streamer. It gives you freedom to listen to your
 music collection from any browser or mobile device. It's like your personal Spotify!
 
-## About this fork
-
-This fork stays close to [upstream Navidrome](https://github.com/navidrome/navidrome) while adding:
-
-- An admin-only `POST /api/upload` endpoint for uploading music files directly into a configured library. It accepts
-  files up to 1 GiB, supports selecting a library and destination folder, prevents folder path traversal, and runs a
-  selective scan after the upload so the new media is immediately indexed.
-- Automated daily synchronization with upstream Navidrome. Sync conflicts or protected workflow changes are opened as
-  pull requests for manual review.
-- A streamlined CI pipeline that tests the synchronized code and publishes multi-platform container images to
-  `ghcr.io/filipton/navidrome`.
-
-The upload endpoint accepts `multipart/form-data` with a required `file` field and optional `libraryId` and `folder`
-fields. Authenticate with an admin JWT, for example:
-
-```sh
-curl -X POST https://your-navidrome.example/api/upload \
-  -H "Authorization: Bearer $TOKEN" \
-  -F "file=@album.flac" \
-  -F "libraryId=1" \
-  -F "folder=Artist/Album"
-```
-
-See [FORK.md](FORK.md) for implementation and maintenance details.
-
 
 **Note**: The `master` branch may be in an unstable or even broken state during development. 
 Please use [releases](https://github.com/navidrome/navidrome/releases) instead of 

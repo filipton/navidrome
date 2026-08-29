@@ -14,53 +14,51 @@ import (
 	"time"
 
 	"github.com/go-chi/chi/v5"
+	"github.com/navidrome/navidrome/core/metrics"
 	"github.com/navidrome/navidrome/log"
 	"github.com/navidrome/navidrome/model"
 	"github.com/navidrome/navidrome/scanner"
 	"github.com/navidrome/navidrome/server"
+	"github.com/navidrome/navidrome/server/events"
 )
 
-// maxUploadSize is the maximum size for an uploaded music file.
 const maxUploadSize = 1 << 30 // 1 GiB
 
-// uploadRouter serves the fork-specific music upload API.
-//
-// FORK POLICY (see FORK.md): it is a standalone router, mounted separately in
-// cmd/root.go, instead of being part of nativeapi.Router. This way upstream
-// changes to native_api.go / wire_gen.go never conflict with this feature.
 type uploadRouter struct {
 	ds      model.DataStore
 	scanner model.Scanner
 }
 
-// NewUploadRouter returns the music-file upload handler.
-//
-// It is meant to be mounted at /api/upload (see cmd/root.go), serving:
-//
-//	POST /api/upload
-//
-//	multipart/form-data fields:
-//	  file       (required)  - the music file to upload
-//	  libraryId  (optional)  - target library ID (defaults to first library)
-//	  folder     (optional)  - relative folder path inside the library
-//	                           (created if missing). No path traversal.
-//
-// On success, performs a selective scan limited to the target folder and
-// returns JSON `{"id": "<mediaFileId>", "path": "...", "libraryId": N, "title": "..."}`.
-func NewUploadRouter(ds model.DataStore, scanner model.Scanner) http.Handler {
+// ServeHTTP adds the fork's upload endpoint without changing the upstream
+// native router. Every other route is delegated unchanged.
+func (api *Router) ServeHTTP(w http.ResponseWriter, r *http.Request) {
+	routePath := r.URL.Path
+	if routeContext := chi.RouteContext(r.Context()); routeContext != nil && routeContext.RoutePath != "" {
+		routePath = routeContext.RoutePath
+	}
+	if routePath != "/upload" && routePath != "/upload/" {
+		api.Handler.ServeHTTP(w, r)
+		return
+	}
+
+	sc := scanner.New(r.Context(), api.ds, events.GetBroker(), api.playlists, metrics.GetPrometheusInstance(api.ds))
+	newUploadRouter(api.ds, sc).ServeHTTP(w, r)
+}
+
+func newUploadRouter(ds model.DataStore, scanner model.Scanner) http.Handler {
 	api := &uploadRouter{ds: ds, scanner: scanner}
 	r := chi.NewRouter()
 	r.Use(server.Authenticator(ds))
 	r.Use(server.JWTRefresher)
 	r.Use(server.UpdateLastAccessMiddleware(ds))
-	r.With(adminOnlyMiddleware).Post("/", api.uploadAndScan)
+	r.With(adminOnlyMiddleware).Post("/upload", api.uploadAndScan)
+	r.With(adminOnlyMiddleware).Post("/upload/", api.uploadAndScan)
 	return r
 }
 
 func (api *uploadRouter) uploadAndScan(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
 
-	// Limit the size of the request body up-front
 	r.Body = http.MaxBytesReader(w, r.Body, maxUploadSize)
 	if err := r.ParseMultipartForm(32 << 20); err != nil {
 		http.Error(w, "invalid multipart form: "+err.Error(), http.StatusBadRequest)
@@ -74,7 +72,6 @@ func (api *uploadRouter) uploadAndScan(w http.ResponseWriter, r *http.Request) {
 	}
 	defer file.Close()
 
-	// Resolve target library
 	libRepo := api.ds.Library(ctx)
 	var lib *model.Library
 	if libIDStr := strings.TrimSpace(r.FormValue("libraryId")); libIDStr != "" {
@@ -101,7 +98,6 @@ func (api *uploadRouter) uploadAndScan(w http.ResponseWriter, r *http.Request) {
 		lib = &libs[0]
 	}
 
-	// Validate / sanitise relative folder path
 	relFolder, err := sanitizeRelPath(r.FormValue("folder"))
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusBadRequest)
@@ -114,34 +110,44 @@ func (api *uploadRouter) uploadAndScan(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	targetDir := filepath.Join(lib.Path, relFolder)
-	if err := os.MkdirAll(targetDir, 0o755); err != nil {
+	root, err := os.OpenRoot(lib.Path)
+	if err != nil {
+		http.Error(w, "cannot open library: "+err.Error(), http.StatusInternalServerError)
+		return
+	}
+	defer root.Close()
+
+	targetDir := relFolder
+	if targetDir == "" {
+		targetDir = "."
+	}
+	if err := root.MkdirAll(targetDir, 0o755); err != nil {
 		http.Error(w, "cannot create folder: "+err.Error(), http.StatusInternalServerError)
 		return
 	}
-	targetPath := filepath.Join(targetDir, fileName)
+	targetPath := filepath.Join(relFolder, fileName)
 
-	// Write the file to disk
-	out, err := os.Create(targetPath)
+	out, err := root.OpenFile(targetPath, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o644)
 	if err != nil {
+		if errors.Is(err, os.ErrExist) {
+			http.Error(w, "file already exists", http.StatusConflict)
+			return
+		}
 		http.Error(w, "cannot save file: "+err.Error(), http.StatusInternalServerError)
 		return
 	}
 	if _, err := io.Copy(out, file); err != nil {
 		_ = out.Close()
-		_ = os.Remove(targetPath)
+		_ = root.Remove(targetPath)
 		http.Error(w, "error writing file: "+err.Error(), http.StatusInternalServerError)
 		return
 	}
 	if err := out.Close(); err != nil {
-		_ = os.Remove(targetPath)
+		_ = root.Remove(targetPath)
 		http.Error(w, "error closing file: "+err.Error(), http.StatusInternalServerError)
 		return
 	}
 
-	// Trigger a selective scan limited to the target folder.
-	// Retry with back-off if the scanner is already busy (e.g. another upload or
-	// a scheduled scan is in progress) rather than failing the whole upload.
 	scanFolder := relFolder
 	if scanFolder == "" {
 		scanFolder = "."
@@ -169,8 +175,6 @@ func (api *uploadRouter) uploadAndScan(w http.ResponseWriter, r *http.Request) {
 		time.Sleep(wait)
 	}
 
-	// Locate the new media file by library-qualified path.
-	// Use path.Join (forward slashes) because the DB always stores paths with '/'.
 	relInLib := path.Join(relFolder, fileName)
 	mfs, err := api.ds.MediaFile(ctx).FindByPaths([]string{fmt.Sprintf("%d:%s", lib.ID, relInLib)})
 	if err != nil {
@@ -193,14 +197,11 @@ func (api *uploadRouter) uploadAndScan(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
-// sanitizeRelPath cleans a user-supplied relative folder path and rejects any
-// attempt to escape the library root.
 func sanitizeRelPath(p string) (string, error) {
 	p = strings.TrimSpace(p)
 	if p == "" {
 		return "", nil
 	}
-	// Reject absolute paths
 	if filepath.IsAbs(p) || strings.HasPrefix(p, "/") || strings.HasPrefix(p, `\`) {
 		return "", fmt.Errorf("folder must be a relative path")
 	}

@@ -143,10 +143,6 @@ func startServer(ctx context.Context) func() error {
 		if strings.HasPrefix(conf.Server.UILoginBackgroundURL, "/") {
 			a.MountRouter("Background images", conf.Server.UILoginBackgroundURL, backgrounds.NewHandler())
 		}
-		// FORK: music upload API (see FORK.md). Mounted separately from the
-		// Native API router so upstream changes to nativeapi/wire never
-		// conflict with this feature.
-		a.MountRouter("Upload API", consts.URLPathNativeAPI+"/upload", CreateUploadRouter(ctx))
 		return a.Run(ctx, conf.Server.Address, conf.Server.Port, conf.Server.TLSCert, conf.Server.TLSKey)
 	}
 }

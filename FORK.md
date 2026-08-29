@@ -1,91 +1,51 @@
-# Fork maintenance guide (filipton/navidrome)
+# Fork maintenance guide
 
-This fork tracks `navidrome/navidrome` (remote `upstream`) and syncs `master`
-daily via `.github/workflows/sync-upstream.yml`. The rules below keep those
-syncs conflict-free. **Read this before adding any new feature to the fork.**
+This fork tracks `navidrome/navidrome` while keeping upstream-owned files unchanged. Fork behavior lives only in files
+that do not exist upstream, so normal upstream merges have no overlapping edits to resolve.
 
-## The one rule
-
-> Never modify an upstream-owned file unless there is no alternative.
-> Conflicts only happen when **both** sides change the same file, so fork
-> features live in fork-owned files.
-
-### Fork-owned files (safe to change freely)
+## Fork-owned files
 
 | File | Purpose |
 | --- | --- |
-| `server/nativeapi/upload.go` | Music upload API handler (`POST /api/upload`) |
-| `server/nativeapi/upload_router_test.go` | Tests for the upload router |
-| `cmd/fork_upload.go` | Hand-written DI for the upload router |
-| `.github/workflows/sync-upstream.yml` | Daily upstream sync workflow |
-| `.github/workflows/pipeline.yml` | Fork's own CI (pinned, see below) |
-| `.gitattributes` | Merge policies (the `merge=ours` rules) |
-| `FORK.md` | This file |
+| `.github/README.md` | Fork landing page shown by GitHub |
+| `.github/workflows/fork-pipeline.yml` | Fork CI and GHCR publication |
+| `.github/workflows/sync-upstream.yml` | Daily upstream synchronization |
+| `server/nativeapi/fork_upload.go` | Music upload API (`POST /api/upload`) |
+| `server/nativeapi/fork_upload_test.go` | Upload route and authentication tests |
+| `FORK.md` | This guide |
 
-### The single upstream edit
+The upstream `.github/workflows/pipeline.yml` remains byte-for-byte unchanged and is disabled in this repository's
+Actions settings. The fork pipeline uses a different filename, so both workflows can receive upstream changes without
+conflicting.
 
-`cmd/root.go` contains **one** fork line in `startServer()`:
+## Upload integration
 
-```go
-a.MountRouter("Upload API", consts.URLPathNativeAPI+"/upload", CreateUploadRouter(ctx))
-```
+The fork adds `ServeHTTP` to the existing `nativeapi.Router` type from a separate file. It intercepts only `/upload`
+inside upstream's existing `/api` mount and delegates every other request to the upstream handler. This avoids edits to
+`cmd/root.go`, Wire injectors, and generated dependency-injection files.
 
-Keep it the only change to upstream-owned Go files. If a sync ever conflicts
-in `root.go`, re-add just this line.
+The endpoint accepts `multipart/form-data` with a required `file` field and optional `libraryId` and `folder` fields.
+It requires an admin JWT and runs a selective scan after saving the file.
 
-## Why not wire?
+## Automatic synchronization
 
-The upload router is wired by hand in `cmd/fork_upload.go` instead of being
-added to `cmd/wire_injectors.go`. Wire regeneration (which upstream does
-regularly) would otherwise rewrite `cmd/wire_gen.go` with the fork's
-injector missing, or conflict with it on every DI change.
+The sync workflow calls GitHub's native `merge-upstream` API. This handles ordinary upstream files and workflow files
+without a personal access token. GitHub's workflow token intentionally suppresses push-triggered workflows, so a
+successful non-empty sync explicitly dispatches `fork-pipeline.yml`; a no-op sync starts no build.
 
-## pipeline.yml policy: `merge=ours`
-
-`.gitattributes` marks `.github/workflows/pipeline.yml` with `merge=ours`:
-when a sync finds that both sides changed it, **our version wins
-automatically** — no conflict, and upstream's pipeline changes are
-intentionally discarded (we maintain our own trimmed pipeline).
-
-The merge driver must be enabled for it to work:
+Merge conflicts make the sync job fail without committing conflict markers. Resolve one locally with:
 
 ```sh
-git config merge.ours.driver true   # one-time, per clone
-```
-
-The sync workflow sets this itself; you only need it for manual merges.
-
-## Merging upstream manually
-
-```sh
-git config merge.ours.driver true   # once per clone
 git fetch upstream
 git merge upstream/master
 ```
 
-Expected result in the current layout: clean merge, or at worst a trivial
-conflict in `cmd/root.go` (keep the fork line, take upstream's rest).
+## Adding fork behavior
 
-## What can still break a sync (and what happens then)
+1. Put it in a new file with a `fork_` prefix when sharing an upstream directory.
+2. Use existing package hooks or methods before editing an upstream-owned file.
+3. Add a focused test in another fork-owned file.
+4. Update the table above.
 
-- **Compile break without conflict**: if upstream changes the signature of an
-  API used by fork-owned files (e.g. `scanner.New` in `cmd/fork_upload.go`,
-  `server.Authenticator` in `upload.go`), the merge stays clean but the build
-  breaks. The fork's pipeline ("Test Go code") catches this right after the
-  sync push — master goes red, no Docker image is pushed. Fix forward on
-  master. Keep fork files depending on as few upstream APIs as possible.
-- **The one line in `cmd/root.go`**: if upstream ever rewrites
-  `startServer()`, resolve the conflict keeping the
-  `MountRouter("Upload API", ...)` call.
-- **Anything else** (registry rate limits, flaky upstream tests, cancelled
-  cleanup jobs) is unrelated to the sync — re-run the failed pipeline jobs.
-
-## Adding a new fork feature
-
-1. Put the code in **new files** (never edit upstream files).
-2. If it needs HTTP routes, build a standalone `http.Handler` and mount it
-   with one extra `MountRouter` line in `cmd/root.go` (see upload API).
-3. If it needs dependency injection, wire it by hand in a new `cmd/fork_*.go`
-   file (mirror what `cmd/wire_gen.go` does for similar dependencies).
-4. Add tests in new `*_test.go` files.
-5. Update the file table above.
+An upstream API change can still break compilation without producing a merge conflict. The fork pipeline catches that
+after every non-empty sync; fix it forward only in fork-owned files where possible.

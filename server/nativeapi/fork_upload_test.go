@@ -1,9 +1,13 @@
 package nativeapi
 
 import (
+	"bytes"
 	"context"
+	"mime/multipart"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"path/filepath"
 
 	"github.com/go-chi/chi/v5"
 	"github.com/navidrome/navidrome/conf/configtest"
@@ -15,9 +19,6 @@ import (
 	. "github.com/onsi/gomega"
 )
 
-// FORK test: verifies the standalone upload router is reachable at the same
-// path as before the refactor (/api/upload) and that its auth chain
-// (Authenticator -> adminOnlyMiddleware) behaves correctly.
 var _ = Describe("Upload API (fork)", func() {
 	var ds *tests.MockDataStore
 	var router http.Handler
@@ -28,9 +29,9 @@ var _ = Describe("Upload API (fork)", func() {
 		ds = &tests.MockDataStore{}
 		auth.Init(ds)
 
+		fallback := http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) { w.WriteHeader(http.StatusTeapot) })
 		root := chi.NewRouter()
-		// Mounted exactly as in cmd/root.go
-		root.Mount("/api/upload", NewUploadRouter(ds, nil))
+		root.Mount("/api", &Router{Handler: fallback, ds: ds})
 		router = server.JWTVerifier(root)
 
 		adminUser := model.User{ID: "admin-1", UserName: "admin", IsAdmin: true, NewPassword: "adminpass"}
@@ -45,7 +46,14 @@ var _ = Describe("Upload API (fork)", func() {
 		Expect(err).ToNot(HaveOccurred())
 	})
 
-	It("rejects unauthenticated requests", func() {
+	It("preserves upstream routes", func() {
+		req := createUnauthenticatedRequest("GET", "/api/song", nil)
+		w := httptest.NewRecorder()
+		router.ServeHTTP(w, req)
+		Expect(w.Code).To(Equal(http.StatusTeapot))
+	})
+
+	It("rejects unauthenticated uploads", func() {
 		req := createUnauthenticatedRequest("POST", "/api/upload", nil)
 		w := httptest.NewRecorder()
 		router.ServeHTTP(w, req)
@@ -63,9 +71,32 @@ var _ = Describe("Upload API (fork)", func() {
 		req := createAuthenticatedRequest("POST", "/api/upload", nil, adminToken)
 		w := httptest.NewRecorder()
 		router.ServeHTTP(w, req)
-		// Empty (non-multipart) body -> the handler itself rejects the form.
-		// Any of these proves the request reached uploadAndScan instead of
-		// being a 404 (bad mount) or 401/403 (auth chain broken).
-		Expect(w.Code).To(BeElementOf(http.StatusBadRequest, http.StatusUnprocessableEntity))
+		Expect(w.Code).To(Equal(http.StatusBadRequest))
+	})
+
+	It("does not overwrite an existing file", func() {
+		libraryPath := GinkgoT().TempDir()
+		library := model.Library{ID: 1, Name: "Music", Path: libraryPath}
+		Expect(ds.Library(context.TODO()).Put(&library)).To(Succeed())
+		target := filepath.Join(libraryPath, "song.mp3")
+		Expect(os.WriteFile(target, []byte("original"), 0o600)).To(Succeed())
+
+		var body bytes.Buffer
+		form := multipart.NewWriter(&body)
+		file, err := form.CreateFormFile("file", "song.mp3")
+		Expect(err).ToNot(HaveOccurred())
+		_, err = file.Write([]byte("replacement"))
+		Expect(err).ToNot(HaveOccurred())
+		Expect(form.Close()).To(Succeed())
+
+		req := createAuthenticatedRequest("POST", "/upload", &body, adminToken)
+		req.Header.Set("Content-Type", form.FormDataContentType())
+		w := httptest.NewRecorder()
+		server.JWTVerifier(newUploadRouter(ds, tests.NewMockScanner())).ServeHTTP(w, req)
+
+		Expect(w.Code).To(Equal(http.StatusConflict))
+		content, err := os.ReadFile(target)
+		Expect(err).ToNot(HaveOccurred())
+		Expect(content).To(Equal([]byte("original")))
 	})
 })
