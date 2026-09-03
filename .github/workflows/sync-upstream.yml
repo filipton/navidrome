@@ -29,4 +29,4 @@ jobs:
         if: steps.sync.outputs.merge_type != 'none'
         env:
           GH_TOKEN: ${{ github.token }}
-        run: gh workflow run fork-pipeline.yml --ref master
+        run: gh workflow run fork-pipeline.yml --ref master --repo ${{ github.repository }}
