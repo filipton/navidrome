@@ -6,7 +6,6 @@ on:
   workflow_dispatch:
 
 permissions:
-  actions: write
   contents: write
 
 concurrency:
@@ -21,12 +20,5 @@ jobs:
         id: sync
         env:
           GH_TOKEN: ${{ secrets.UPSTREAM_SYNC_TOKEN }}
-        run: |
-          merge_type=$(gh api --method POST "repos/${GITHUB_REPOSITORY}/merge-upstream" -f branch=master --jq .merge_type)
-          echo "merge_type=${merge_type}" >> "$GITHUB_OUTPUT"
-
-      - name: Test and publish updated branch
-        if: steps.sync.outputs.merge_type != 'none'
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: gh workflow run fork-pipeline.yml --ref master --repo ${{ github.repository }}
+        # The push made with UPSTREAM_SYNC_TOKEN triggers fork-pipeline.yml on its own
+        run: gh api --method POST "repos/${GITHUB_REPOSITORY}/merge-upstream" -f branch=master --jq .merge_type
