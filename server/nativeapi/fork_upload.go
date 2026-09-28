@@ -72,7 +72,7 @@ func (api *uploadRouter) uploadAndScan(w http.ResponseWriter, r *http.Request) {
 	}
 	defer file.Close()
 
-	libRepo := api.ds.Library(ctx)
+	libRepo := api.ds.Library()
 	var lib *model.Library
 	if libIDStr := strings.TrimSpace(r.FormValue("libraryId")); libIDStr != "" {
 		id, err := strconv.Atoi(libIDStr)
@@ -80,13 +80,13 @@ func (api *uploadRouter) uploadAndScan(w http.ResponseWriter, r *http.Request) {
 			http.Error(w, "invalid libraryId", http.StatusBadRequest)
 			return
 		}
-		lib, err = libRepo.Get(id)
+		lib, err = libRepo.Get(ctx, id)
 		if err != nil {
 			http.Error(w, "library not found", http.StatusNotFound)
 			return
 		}
 	} else {
-		libs, err := libRepo.GetAll()
+		libs, err := libRepo.GetAll(ctx)
 		if err != nil {
 			http.Error(w, "cannot list libraries: "+err.Error(), http.StatusInternalServerError)
 			return
@@ -176,7 +176,7 @@ func (api *uploadRouter) uploadAndScan(w http.ResponseWriter, r *http.Request) {
 	}
 
 	relInLib := path.Join(relFolder, fileName)
-	mfs, err := api.ds.MediaFile(ctx).FindByPaths([]string{fmt.Sprintf("%d:%s", lib.ID, relInLib)})
+	mfs, err := api.ds.MediaFile().FindByPaths(ctx, []string{fmt.Sprintf("%d:%s", lib.ID, relInLib)})
 	if err != nil {
 		http.Error(w, "lookup failed: "+err.Error(), http.StatusInternalServerError)
 		return
