@@ -12,6 +12,8 @@ that do not exist upstream, so normal upstream merges have no overlapping edits 
 | `.github/workflows/sync-upstream.yml` | Daily upstream synchronization |
 | `server/nativeapi/fork_upload.go` | Music upload API (`POST /api/upload`) |
 | `server/nativeapi/fork_upload_test.go` | Upload route and authentication tests |
+| `cmd/fork_service_account.go` | `navidrome service-account` command for companion services |
+| `cmd/fork_service_account_test.go` | Service account provisioning tests |
 | `FORK.md` | This guide |
 
 The upstream `.github/workflows/pipeline.yml` remains byte-for-byte unchanged and is disabled in this repository's
@@ -26,6 +28,17 @@ inside upstream's existing `/api` mount and delegates every other request to the
 
 The endpoint accepts `multipart/form-data` with a required `file` field and optional `libraryId` and `folder` fields.
 It requires an admin JWT and runs a selective scan after saving the file.
+
+## Service account
+
+`navidrome service-account --username <name> --password-file <path>` creates an admin account for a companion
+service (octo-fiesta in the navi-fiesta image) or rotates its password. Every run generates a new random 256-bit
+password and writes it to the file with mode `0600`. The server never runs this on its own; nothing changes unless a
+deployment invokes the command, before starting Navidrome.
+
+The command records the account's ID in the `property` table and refuses to touch a same-named account it did not
+create. While no admin exists it does nothing and removes the password file, so the web UI's first-admin setup still
+runs.
 
 ## Automatic synchronization
 
